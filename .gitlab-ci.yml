@@ -1,0 +1,84 @@
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+  - e2e
+
+variables:
+  AWS_REGION: eu-north-1
+  TAG: ${CI_COMMIT_SHORT_SHA}
+
+# --- Lint ---
+
+lint:
+  stage: lint
+  image: golangci/golangci-lint:v1.57
+  script:
+    - cd app
+    - go vet ./...
+    - golangci-lint run
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Test ---
+
+test:
+  stage: test
+  image: golang:1.22-alpine
+  script:
+    - cd app
+    - go test -v -race -coverprofile=coverage.out ./...
+    - go tool cover -func=coverage.out
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: app/coverage.out
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Build ---
+
+build:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - apk add --no-cache aws-cli
+    - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+  script:
+    - docker build -t ${ECR_REGISTRY}/trdl:${TAG} app/
+    - docker push ${ECR_REGISTRY}/trdl:${TAG}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Deploy ---
+
+deploy:
+  stage: deploy
+  image: alpine/helm:3.14.0
+  before_script:
+    - apk add --no-cache aws-cli
+    - aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
+  script:
+    - helm upgrade --install trdl k8s/trdl/
+        --set image.repository=${ECR_REGISTRY}/trdl
+        --set image.tag=${TAG}
+        --wait --timeout 120s
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- E2E ---
+
+e2e:
+  stage: e2e
+  image: curlimages/curl:8.5.0
+  script:
+    - chmod +x tests/e2e_test.sh
+    - TRDL_URL="http://${TRDL_ALB_DNS}" tests/e2e_test.sh
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

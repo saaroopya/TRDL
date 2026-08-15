@@ -1,0 +1,4 @@
+region        = "eu-north-1"
+cluster_name  = "trdl-cluster"
+instance_type = "t3.small"
+nodes_per_az  = 1
